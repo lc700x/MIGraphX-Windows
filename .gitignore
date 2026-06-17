@@ -27,6 +27,20 @@ __pycache__/
 *.pyo
 *.pyd
 
+# Build helpers
+build_deps.sh
+protobuf-toolchain.cmake
+
+# Dependency build outputs
+abseil-cpp/
+protobuf/
+clang-deps/
+bin.7z
+
+# .claude / serena (editor config, not code)
+.claude/
+.serena/
+
 # Editor / OS
 .vscode/
 .idea/

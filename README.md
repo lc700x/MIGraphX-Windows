@@ -189,7 +189,7 @@ model = migraphx.load_buffer(buf)
 | **hipBLASLt** | **✅ ON** | Flexible BLAS |
 | Composable Kernel | ❌ OFF | Not ported to Windows |
 | MLIR | ❌ OFF | rocMLIR not available on Windows |
-| **ONNX parser** | **❌ OFF** | vcpkg protobuf (MSVC) ABI mismatch with clang++ |
+| **ONNX parser** | **❌ OFF** | vcpkg protobuf (MSVC) ABI mismatch with clang++; protobuf built with clang++ has cmake target incompatibilities |
 | **TF parser** | **❌ OFF** | Same protobuf ABI issue |
 | Python bindings | ✅ ON | `migraphx.cp312-win_amd64.pyd` |
 | Tests | ❌ OFF | Disabled for faster iteration |
