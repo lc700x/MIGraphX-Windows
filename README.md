@@ -301,6 +301,33 @@ Applied to AMDMIGraphX source to build on Windows:
 | `test_migraphx.py` | GPU inference smoke test (pointwise + convolution) |
 | `test_gpu.py` | Minimal add+relu GPU test |
 
+## Output Binaries (`build_gpu/bin/`)
+
+### MIGraphX DLLs
+
+| File | Size | Description |
+|------|------|-------------|
+| `migraphx.dll` | 48 MB | Core library |
+| `migraphx_device.dll` | 34 MB | 27-arch HIP kernels (gfx900–gfx1250) |
+| `migraphx_gpu.dll` | 4.6 MB | GPU target |
+| `migraphx_ref.dll` | 1.1 MB | Reference CPU target |
+| `migraphx_py.dll` | 78 KB | Python glue |
+| `migraphx_py_3.12.dll` | 219 KB | Python 3.12 bindings |
+| `migraphx.cp312-win_amd64.pyd` | 900 KB | Importable Python extension |
+| `migraphx-hiprtc-driver.exe` | 108 KB | HipRTC JIT kernel compiler (subprocess) |
+
+### Runtime ROCm DLLs (copied from pip SDK)
+
+| File | Source |
+|------|--------|
+| `amdhip64_7.dll`, `hiprtc0714.dll`, `hiprtc-builtins0714.dll` | `_rocm_sdk_core/bin` |
+| `amd_comgr.dll`, `rocm_kpack.dll` | `_rocm_sdk_core/bin` |
+| `MIOpen.dll`, `rocblas.dll`, `libhipblaslt.dll` | `_rocm_sdk_libraries/bin` |
+| `sqlite3.dll` | vcpkg |
+| `VCRUNTIME140.dll`, `MSVCP140.dll`, `api-ms-win-crt-*.dll` | Windows SDK / System32 |
+
+> The wheel (`dist/migraphx_rocm-*.whl`) bundles only the MIGraphX DLLs. ROCm SDK DLLs are loaded at runtime from the pip packages via a `.pth` setup file — no manual path configuration needed.
+
 ## License
 
 MIT — see [AMDMIGraphX](https://github.com/ROCm/AMDMIGraphX) upstream.
