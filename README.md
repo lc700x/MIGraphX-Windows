@@ -1,0 +1,279 @@
+# MIGraphX for Windows — ROCm 7.14 + MIOpen + rocBLAS
+
+MIGraphX 2.16.0.dev built for **AMD Radeon RX 9060 XT** (RDNA 4 / gfx1200, gfx1201) on Windows 11.
+GPU backend with **MIOpen** (Find-2.0 API), **rocBLAS** (Beta API), **hipBLASLt**, and **hipRTC**.
+
+## Prerequisites
+
+- **Windows 11** (Windows 10 may work, untested)
+- **AMD RDNA 4 GPU** (gfx1200/gfx1201; edit `GPU_TARGETS` for other GPUs)
+- **Python 3.12** (other 3.10+ versions may work)
+- **Visual Studio 2022 BuildTools** — for vcpkg C++ deps + CMake + Ninja
+- **Git** — for cloning AMDMIGraphX + rocm-cmake
+
+### Install ROCm 7.14 SDK (pip)
+
+```powershell
+# Core SDK + libraries (includes MIOpen, rocBLAS, hipBLAS, hipBLASLt)
+pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ "torch[device-gfx120X-all]"
+
+# Development headers & import libraries (needed for building)
+pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ rocm-sdk-devel
+```
+
+After install, extract the devel package:
+```powershell
+New-Item -ItemType Directory -Force -Path F:\MIGraphxWin\rocm-sdk | Out-Null
+tar -xf "$env:LOCALAPPDATA\..\..\F:\MIGraphxWin\venv\Lib\site-packages\rocm_sdk_devel\_devel.tar" -C F:\MIGraphxWin\rocm-sdk
+```
+
+Then fix broken symlinks (devel tar uses relative symlinks that don't resolve):
+```powershell
+# Copy real files from core to devel to fix symlinks
+$core = "F:\MIGraphxWin\venv\Lib\site-packages\_rocm_sdk_core"
+$devel = "F:\MIGraphxWin\rocm-sdk\_rocm_sdk_devel"
+# Remove broken symlinks
+cmd /c "dir /a:l $devel" 2>$null  # check for any leftover symlinks
+Copy-Item "$core\lib\*.lib" $devel\lib\ -Force
+Copy-Item "$core\bin\*.dll" $devel\bin\ -Force
+Copy-Item "$core\include\*" $devel\include\ -Recurse -Force
+```
+
+## Quick Start — Python
+
+After building with `build_migraphx.ps1`, `migraphx` is installed into the venv automatically. Use the venv python directly:
+
+```python
+import os
+
+# Only ROCm SDK DLL paths needed — all migraphx DLLs are in site-packages
+os.add_dll_directory(r"F:\MIGraphxWin\venv\Lib\site-packages\_rocm_sdk_libraries\bin")
+os.add_dll_directory(r"F:\MIGraphxWin\venv\Lib\site-packages\_rocm_sdk_core\bin")
+
+import migraphx
+print(f"MIGraphX {migraphx.__version__}")
+
+# Conv + ReLU on GPU (uses MIOpen for convolution)
+p = migraphx.program()
+mm = p.get_main_module()
+x = mm.add_parameter("x", migraphx.shape(type="float", lens=[1, 3, 224, 224]))
+w = mm.add_literal(migraphx.generate_argument(migraphx.shape(type="float", lens=[64, 3, 3, 3])))
+c = mm.add_instruction(migraphx.op("convolution", padding=[1, 1], stride=[1, 1]), [x, w])
+r = mm.add_instruction(migraphx.op("relu"), [c])
+mm.add_return([r])
+
+p.compile(migraphx.get_target("gpu"))
+result = p.run({"x": migraphx.generate_argument(migraphx.shape(type="float", lens=[1, 3, 224, 224]))})
+print(f"Output: {result[0].get_shape()}")
+```
+
+## PyTorch Model Inference
+
+### PyTorch → ONNX → MIGraphX (recommended)
+
+Export from PyTorch, load in MIGraphX for GPU inference.
+
+**Step 1 — Export from PyTorch to ONNX:**
+
+```python
+import torch, torchvision
+
+model = torchvision.models.resnet50(pretrained=True).eval()
+dummy = torch.randn(1, 3, 224, 224)
+
+torch.onnx.export(
+    model, dummy, "resnet50.onnx",
+    input_names=["input"], output_names=["output"],
+    dynamic_axes={"input": {0: "batch"}, "output": {0: "batch"}},
+    opset_version=17,
+)
+```
+
+**Step 2 — Load & run with MIGraphX:**
+
+```python
+import os, sys, numpy as np
+
+os.add_dll_directory(r"F:\MIGraphxWin\venv\Lib\site-packages\_rocm_sdk_libraries\bin")
+os.add_dll_directory(r"F:\MIGraphxWin\venv\Lib\site-packages\_rocm_sdk_core\bin")
+
+import migraphx
+
+model = migraphx.parse_onnx("resnet50.onnx")
+model.compile(migraphx.get_target("gpu"))
+
+input_data = np.random.randn(1, 3, 224, 224).astype(np.float32)
+names = list(model.get_parameter_shapes().keys())
+result = model.run({names[0]: migraphx.argument(input_data)})
+output = np.array(list(result)[0])
+print(f"Output: {output.shape}")
+```
+
+**Step 3 — Benchmark:**
+
+```python
+import time
+
+# Warmup
+for _ in range(10):
+    model.run({names[0]: migraphx.argument(input_data)})
+migraphx.gpu_sync()
+
+N = 100
+t0 = time.perf_counter()
+for _ in range(N):
+    model.run({names[0]: migraphx.argument(input_data)})
+migraphx.gpu_sync()
+elapsed = time.perf_counter() - t0
+print(f"{N/elapsed:.1f} inf/s, {elapsed/N*1000:.2f} ms/inf")
+```
+
+### Quantization: FP16 / INT8
+
+```python
+model = migraphx.parse_onnx("model.onnx")
+
+# FP16 (fast, small accuracy loss)
+migraphx.quantize_fp16(model)
+model.compile(migraphx.get_target("gpu"))
+
+# INT8 (fastest, needs calibration)
+calib = [migraphx.argument(np.random.randn(1, 3, 224, 224).astype(np.float32))]
+migraphx.quantize_int8(model, migraphx.get_target("gpu"), calibration=calib)
+model.compile(migraphx.get_target("gpu"))
+```
+
+### Save / Load compiled programs
+
+```python
+migraphx.save(model, "model.mxr")          # to file
+model = migraphx.load("model.mxr")
+
+buf = migraphx.save_buffer(model)          # to bytes
+model = migraphx.load_buffer(buf)
+```
+
+## Build Configuration
+
+| Feature | Status | Note |
+|---------|--------|------|
+| GPU backend | ✅ ON | HIP + hipRTC |
+| GPU targets | gfx1200, gfx1201 | RDNA 4 (RX 9060 XT) |
+| **MIOpen** | **✅ ON** | Find-2.0 API + Find Mode API |
+| **rocBLAS** | **✅ ON** | Beta API, GEMM acceleration |
+| **hipBLASLt** | **✅ ON** | Flexible BLAS |
+| Composable Kernel | ❌ OFF | Not ported to Windows |
+| MLIR | ❌ OFF | rocMLIR not available on Windows |
+| **ONNX parser** | **❌ OFF** | vcpkg protobuf (MSVC) ABI mismatch with clang++ |
+| **TF parser** | **❌ OFF** | Same protobuf ABI issue |
+| Python bindings | ✅ ON | `migraphx.cp312-win_amd64.pyd` |
+| Tests | ❌ OFF | Disabled for faster iteration |
+
+### Enabling ONNX Support
+
+ONNX/TF parsers need protobuf built with clang++ (vcpkg default is MSVC — ABI mismatch). Two paths:
+
+**Path A — Manual protobuf build (recommended):**
+```powershell
+$ClangCXX = "F:\MIGraphxWin\venv\Lib\site-packages\_rocm_sdk_core\lib\llvm\bin\clang++.exe"
+$ClangCC  = "F:\MIGraphxWin\venv\Lib\site-packages\_rocm_sdk_core\lib\llvm\bin\clang.exe"
+$Prefix   = "F:\MIGraphxWin\clang-deps"
+
+# Build abseil-cpp
+git clone https://github.com/abseil/abseil-cpp.git --depth 1 --branch lts_2024_01_16
+cmake -S abseil-cpp -B abseil-cpp/build -G Ninja `
+  -DCMAKE_CXX_COMPILER=$ClangCXX -DCMAKE_C_COMPILER=$ClangCC `
+  -DCMAKE_INSTALL_PREFIX=$Prefix -DABSL_BUILD_TESTING=OFF
+cmake --build abseil-cpp/build --parallel && cmake --install abseil-cpp/build
+
+# Build protobuf
+git clone https://github.com/protocolbuffers/protobuf.git --depth 1 --branch v27.0
+cmake -S protobuf -B protobuf/build -G Ninja `
+  -DCMAKE_CXX_COMPILER=$ClangCXX -DCMAKE_C_COMPILER=$ClangCC `
+  -DCMAKE_PREFIX_PATH=$Prefix -DCMAKE_INSTALL_PREFIX=$Prefix `
+  -Dprotobuf_BUILD_TESTS=OFF -Dprotobuf_ABSL_PROVIDER=package
+cmake --build protobuf/build --parallel && cmake --install protobuf/build
+```
+
+Then add `$Prefix` to `CMAKE_PREFIX_PATH` and set `-DMIGRAPHX_ENABLE_ONNX=ON -DMIGRAPHX_ENABLE_TF=ON`.
+
+**Path B — vcpkg custom triplet:**
+Create `x64-windows-clang.cmake` triplet with clang compilers, then `vcpkg install protobuf:x64-windows-clang`.
+
+> **⚠️ Current state:** ONNX disabled. `migraphx.parse_onnx()` not available. Use direct API (build programs manually) or rebuild protobuf with clang++ to enable ONNX.
+
+## Rebuilding
+
+Run the build script after installing prerequisites:
+
+```powershell
+.\build_migraphx.ps1 -GPU_TARGETS "gfx1200;gfx1201"
+```
+
+The script handles cmake configure, build, copies required runtime DLLs (UCRT, VC++ runtime, SQLite3, ROCm SDK DLLs + kernel databases) to the output directory, and installs `migraphx` into the venv site-packages for direct `import migraphx`.
+
+Test with:
+```powershell
+F:\MIGraphxWin\venv\Scripts\python.exe test_gpu.py
+F:\MIGraphxWin\venv\Scripts\python.exe test_migraphx.py
+```
+
+## API Reference
+
+### Program construction
+| Function | Description |
+|----------|-------------|
+| `migraphx.program()` | Create an empty program |
+| `p.get_main_module()` | Get main module for adding instructions |
+| `p.compile(target)` | Compile for a target (e.g. GPU) |
+| `p.run(params)` | Execute with dict of named arguments |
+| `p.get_parameter_shapes()` | Get expected input shapes |
+
+### Module instructions
+| Method | Description |
+|--------|-------------|
+| `mm.add_parameter(name, shape)` | Add input placeholder |
+| `mm.add_literal(arg)` | Add constant (weights, biases) |
+| `mm.add_instruction(op, inputs)` | Add operation node |
+| `mm.add_return([...])` | Set module outputs |
+
+### Shapes & arguments
+| Function | Description |
+|----------|-------------|
+| `migraphx.shape(type="float", lens=[1,3,224,224])` | Create shape descriptor |
+| `migraphx.generate_argument(shape, seed=0)` | Generate random tensor |
+| `migraphx.argument(np_array)` | Wrap numpy array as MIGraphX tensor |
+| `np.array(mx_arg)` | Convert MIGraphX tensor to numpy |
+
+### GPU memory
+| Function | Description |
+|----------|-------------|
+| `migraphx.allocate_gpu(shape)` | Allocate GPU buffer |
+| `migraphx.to_gpu(arg)` | Copy host→device |
+| `migraphx.from_gpu(arg)` | Copy device→host |
+| `migraphx.gpu_sync()` | Synchronize GPU stream |
+
+### Common operations
+| Op name | Attributes |
+|---------|-----------|
+| `convolution` | `padding`, `stride`, `dilation`, `group` |
+| `pooling` | `mode` (average/max), `padding`, `stride` |
+| `relu`, `sigmoid`, `tanh`, `leaky_relu` | — (`leaky_relu`: `alpha`) |
+| `softmax` | `axis` |
+| `dot` | — (matrix multiply) |
+| `add`, `mul`, `sub`, `div` | — (element-wise) |
+| `flatten`, `reshape`, `transpose` | `axis` / `dims` / `permutation` |
+| `concat` | `axis` |
+| `batch_norm_inference` | `epsilon`, `momentum` |
+
+## Files
+
+| File | Purpose |
+|------|---------|
+| `build_migraphx.ps1` | Full build script (cmake + ninja + DLL copy) |
+| `test_migraphx.py` | GPU inference smoke test (pointwise + convolution) |
+| `test_gpu.py` | Minimal add+relu GPU test |
+
+## License
+
+MIT — see [AMDMIGraphX](https://github.com/ROCm/AMDMIGraphX) upstream.

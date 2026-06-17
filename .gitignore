@@ -1,0 +1,35 @@
+# Build outputs
+build_gpu/
+build_gpu_gfx120x/
+build/
+
+# Python environment
+venv/
+
+# Package manager (reinstall via vcpkg bootstrap)
+vcpkg/
+
+# ROCm devel tarball extraction
+rocm-sdk/
+
+# rocm-cmake (cloned dependency)
+rocm-cmake/
+
+# AMDMIGraphX source (nested git repo — clone separately + apply patches)
+src/
+
+# Built wheels
+dist/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
