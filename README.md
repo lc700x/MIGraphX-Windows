@@ -1,42 +1,45 @@
 # MIGraphX for Windows — ROCm 7.14 + MIOpen + rocBLAS
 
-MIGraphX 2.16.0.dev built for **AMD Radeon RX 9060 XT** (RDNA 4 / gfx1200, gfx1201) on Windows 11.
+MIGraphX 2.16.0.dev built for AMD GPUs (27 architectures, gfx900–gfx1250) on Windows 11.
 GPU backend with **MIOpen** (Find-2.0 API), **rocBLAS** (Beta API), **hipBLASLt**, and **hipRTC**.
 
 ## Prerequisites
 
 - **Windows 11** (Windows 10 may work, untested)
-- **AMD RDNA 4 GPU** (gfx1200/gfx1201; edit `GPU_TARGETS` for other GPUs)
+- **AMD GPU** — any supported arch (see GPU Targets below)
 - **Python 3.12** (other 3.10+ versions may work)
 - **Visual Studio 2022 BuildTools** — for vcpkg C++ deps + CMake + Ninja
 - **Git** — for cloning AMDMIGraphX + rocm-cmake
 
-### Install ROCm 7.14 SDK (pip)
+### Install Python Environment
+
+Create a virtual environment and install the ROCm 7.14 packages.
+
+**AMD Radeon RX 9000 Series (gfx1200/gfx1201):**
 
 ```powershell
-# Core SDK + libraries (includes MIOpen, rocBLAS, hipBLAS, hipBLASLt)
-pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ "torch[device-gfx120X-all]"
+python -m venv .venv
+.venv\Scripts\activate
 
-# Development headers & import libraries (needed for building)
-pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ rocm-sdk-devel
+pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ `
+    "rocm[libraries,device-gfx1201,device-gfx1200]==7.14.0a20260615" `
+    "torch[device-gfx1201,device-gfx1200]==2.10.0+rocm7.14.0a20260615" `
+    "torchvision[device-gfx1201,device-gfx1200]==0.25.0+rocm7.14.0a20260615" `
+    "rocm_sdk_devel==7.14.0a20260615"
 ```
+
+For other GPU architectures replace `device-gfx1200,device-gfx1201` with your target (e.g. `device-gfx1100` for RX 7000 series).
 
 After install, extract the devel package:
 ```powershell
-New-Item -ItemType Directory -Force -Path F:\MIGraphxWin\rocm-sdk | Out-Null
-tar -xf "$env:LOCALAPPDATA\..\..\F:\MIGraphxWin\venv\Lib\site-packages\rocm_sdk_devel\_devel.tar" -C F:\MIGraphxWin\rocm-sdk
-```
-
-Then fix broken symlinks (devel tar uses relative symlinks that don't resolve):
-```powershell
-# Copy real files from core to devel to fix symlinks
-$core = "F:\MIGraphxWin\venv\Lib\site-packages\_rocm_sdk_core"
-$devel = "F:\MIGraphxWin\rocm-sdk\_rocm_sdk_devel"
-# Remove broken symlinks
-cmd /c "dir /a:l $devel" 2>$null  # check for any leftover symlinks
-Copy-Item "$core\lib\*.lib" $devel\lib\ -Force
-Copy-Item "$core\bin\*.dll" $devel\bin\ -Force
-Copy-Item "$core\include\*" $devel\include\ -Recurse -Force
+$SP = python -c "import site; print(site.getsitepackages()[0])"
+New-Item -ItemType Directory -Force -Path rocm-sdk | Out-Null
+tar -xf "$SP\rocm_sdk_devel\_devel.tar" -C rocm-sdk
+$core  = "$SP\_rocm_sdk_core"
+$devel = "rocm-sdk\_rocm_sdk_devel"
+Copy-Item "$core\lib\*.lib"      "$devel\lib\"     -Force
+Copy-Item "$core\bin\*.dll"      "$devel\bin\"     -Force
+Copy-Item "$core\include\*"      "$devel\include\" -Recurse -Force
 ```
 
 ## Quick Start — Python
@@ -44,11 +47,30 @@ Copy-Item "$core\include\*" $devel\include\ -Recurse -Force
 After building with `build_migraphx.ps1`, `migraphx` is installed into the venv automatically. Use the venv python directly:
 
 ```python
-import os
+import os, torch
 
-# Only ROCm SDK DLL paths needed — all migraphx DLLs are in site-packages
-os.add_dll_directory(r"F:\MIGraphxWin\venv\Lib\site-packages\_rocm_sdk_libraries\bin")
-os.add_dll_directory(r"F:\MIGraphxWin\venv\Lib\site-packages\_rocm_sdk_core\bin")
+# Locate ROCm SDK from torch install (no hardcoded paths)
+_sp = os.path.dirname(torch.__file__)
+_sp = os.path.dirname(_sp)  # site-packages
+if True:
+    ROCM_PATH = os.path.join(_sp, "_rocm_sdk_devel")
+    os.environ["HIP_PLATFORM"]       = "amd"
+    os.environ["HIP_PATH"]           = ROCM_PATH
+    os.environ["HIP_CLANG_PATH"]     = os.path.join(ROCM_PATH, "llvm", "bin")
+    os.environ["HIP_INCLUDE_PATH"]   = os.path.join(ROCM_PATH, "include")
+    os.environ["HIP_LIB_PATH"]       = os.path.join(ROCM_PATH, "lib")
+    os.environ["HIP_DEVICE_LIB_PATH"]= os.path.join(ROCM_PATH, "lib", "llvm", "amdgcn", "bitcode")
+    os.environ["PATH"] = os.pathsep.join([
+        os.path.join(ROCM_PATH, "bin"),
+        os.path.join(ROCM_PATH, "llvm", "bin"),
+        os.environ.get("PATH", "")
+    ])
+    os.environ["CPATH"]        = os.path.join(ROCM_PATH, "include") + os.pathsep + os.environ.get("CPATH", "")
+    os.environ["LIBRARY_PATH"] = os.pathsep.join([
+        os.path.join(ROCM_PATH, "lib"), os.path.join(ROCM_PATH, "lib64"),
+        os.environ.get("LIBRARY_PATH", "")
+    ])
+    os.environ["PKG_CONFIG_PATH"] = os.path.join(ROCM_PATH, "lib", "pkgconfig") + os.pathsep + os.environ.get("PKG_CONFIG_PATH", "")
 
 import migraphx
 print(f"MIGraphX {migraphx.__version__}")
@@ -92,10 +114,13 @@ torch.onnx.export(
 **Step 2 — Load & run with MIGraphX:**
 
 ```python
-import os, sys, numpy as np
+import os, numpy as np, torch
 
-os.add_dll_directory(r"F:\MIGraphxWin\venv\Lib\site-packages\_rocm_sdk_libraries\bin")
-os.add_dll_directory(r"F:\MIGraphxWin\venv\Lib\site-packages\_rocm_sdk_core\bin")
+_sp = os.path.dirname(os.path.dirname(torch.__file__))  # site-packages
+ROCM_PATH = os.path.join(_sp, "_rocm_sdk_devel")
+os.environ["HIP_PLATFORM"] = "amd"
+os.environ["HIP_PATH"]     = ROCM_PATH
+os.environ["PATH"] = os.path.join(ROCM_PATH, "llvm", "bin") + os.pathsep + os.environ.get("PATH", "")
 
 import migraphx
 
