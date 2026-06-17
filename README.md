@@ -158,7 +158,7 @@ model = migraphx.load_buffer(buf)
 | Feature | Status | Note |
 |---------|--------|------|
 | GPU backend | ✅ ON | HIP + hipRTC |
-| GPU targets | gfx1200, gfx1201 | RDNA 4 (RX 9060 XT) |
+| GPU targets | gfx900–gfx1250 (27 arches) | all RDNA/CDNA via multi-arch build |
 | **MIOpen** | **✅ ON** | Find-2.0 API + Find Mode API |
 | **rocBLAS** | **✅ ON** | Beta API, GEMM acceleration |
 | **hipBLASLt** | **✅ ON** | Flexible BLAS |
@@ -202,21 +202,48 @@ Create `x64-windows-clang.cmake` triplet with clang compilers, then `vcpkg insta
 
 > **⚠️ Current state:** ONNX disabled. `migraphx.parse_onnx()` not available. Use direct API (build programs manually) or rebuild protobuf with clang++ to enable ONNX.
 
-## Rebuilding
+## Building from Source
 
-Run the build script after installing prerequisites:
+### Step 1 — Get source + apply patches
 
 ```powershell
-.\build_migraphx.ps1 -GPU_TARGETS "gfx1200;gfx1201"
+.\setup_src.ps1
 ```
 
-The script handles cmake configure, build, copies required runtime DLLs (UCRT, VC++ runtime, SQLite3, ROCm SDK DLLs + kernel databases) to the output directory, and installs `migraphx` into the venv site-packages for direct `import migraphx`.
+Clones AMDMIGraphX at the pinned commit (`0043a53c9`), clones `rocm-cmake`, and applies `patches/windows_build.patch` (Windows compatibility fixes).
+
+### Step 2 — Build
+
+```powershell
+# Default: gfx1200 + gfx1201 only (fast)
+.\build.bat
+
+# All 27 GPU architectures
+.\build_migraphx.ps1 -GPU_TARGETS "gfx900;gfx906;gfx908;gfx90a;gfx942;gfx950;gfx1010;gfx1011;gfx1012;gfx1030;gfx1031;gfx1032;gfx1033;gfx1034;gfx1035;gfx1036;gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1152;gfx1153;gfx1200;gfx1201;gfx1250"
+```
+
+Handles cmake configure, Ninja build, DLL copy, venv install, smoke test, and wheel build.
 
 Test with:
 ```powershell
 F:\MIGraphxWin\venv\Scripts\python.exe test_gpu.py
 F:\MIGraphxWin\venv\Scripts\python.exe test_migraphx.py
 ```
+
+### Patches (`patches/windows_build.patch`)
+
+Applied to AMDMIGraphX source to build on Windows:
+
+| File | Fix |
+|------|-----|
+| `CMakeLists.txt` | Add `MIGRAPHX_ENABLE_ONNX` / `MIGRAPHX_ENABLE_TF` options |
+| `cmake/PythonModules.cmake` | Skip non-numeric Python versions (Astral/uv detection) |
+| `src/CMakeLists.txt` | Conditional ONNX/TF subdirs; compile definitions when disabled |
+| `src/py/CMakeLists.txt` | Link ONNX/TF libs only when targets exist |
+| `src/py/migraphx_py.cpp` | Guard `parse_onnx` / `parse_tf` with `#ifndef MIGRAPHX_DISABLE_*` |
+| `src/driver/main.cpp` | Same include guards for ONNX/TF headers |
+| `src/targets/gpu/device_name.*` | Fix `#if` guard: `HIPBLASLT \|\| ROCBLAS` |
+| `src/targets/gpu/jit/mlir.cpp` | Wrap entire file in `#ifdef MIGRAPHX_MLIR` |
 
 ## API Reference
 

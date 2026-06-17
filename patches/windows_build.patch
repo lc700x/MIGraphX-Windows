@@ -1,0 +1,195 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 9abedabed..9db585a9b 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -127,6 +127,9 @@ endif()
+ 
+ option(MIGRAPHX_USE_EIGEN "Enable Eigen for optimized ref GEMM" ON)
+ 
++option(MIGRAPHX_ENABLE_ONNX "Enable ONNX parser" ON)
++option(MIGRAPHX_ENABLE_TF "Enable TensorFlow parser" ON)
++
+ set(MIGRAPHX_USE_AMDMLSS "AUTO" CACHE STRING
+     "Enable MIGraphX to use AMDMLSS: AUTO (use if found), ON (require), OFF (disable)")
+ set_property(CACHE MIGRAPHX_USE_AMDMLSS PROPERTY STRINGS AUTO ON OFF)
+diff --git a/cmake/PythonModules.cmake b/cmake/PythonModules.cmake
+index c79c71ab2..14ab99203 100644
+--- a/cmake/PythonModules.cmake
++++ b/cmake/PythonModules.cmake
+@@ -131,8 +131,9 @@ if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
+         if(NOT _found_python MATCHES "^\\*[ \t]*")
+             string(REGEX REPLACE "^-V:([0-9]*\\.[0-9]*t?)[ \\t]*\\*?[ \\t]*" "\\1;" _tuple ${_found_python})
+             list(GET _tuple 0 _version)
+-            # Ignore if the Python version is disabled
+-            if(NOT _version IN_LIST PYTHON_DISABLE_VERSIONS)
++            # Ignore if the Python version is disabled or not a valid numeric version
++            string(REGEX MATCH "^[0-9]+\\.[0-9]+" _valid_version "${_version}")
++            if(NOT _version IN_LIST PYTHON_DISABLE_VERSIONS AND _valid_version)
+                 list(GET _tuple 1 _python_executable)
+                 find_python(${_version} "${_python_executable}")
+                 message(STATUS "Python ${_version} found.")
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 991e135ce..a8bd8e0d0 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -161,6 +161,13 @@ if(WIN32)
+     target_compile_definitions(migraphx PUBLIC MIGRAPHX_USE_TYPE_ERASED_MATCHERS=1)
+ endif()
+ 
++if(NOT MIGRAPHX_ENABLE_ONNX)
++    target_compile_definitions(migraphx PUBLIC MIGRAPHX_DISABLE_ONNX=1)
++endif()
++if(NOT MIGRAPHX_ENABLE_TF)
++    target_compile_definitions(migraphx PUBLIC MIGRAPHX_DISABLE_TF=1)
++endif()
++
+ configure_file(version.h.in include/migraphx/version.h)
+ add_library(migraphx_version INTERFACE)
+ rocm_install_targets(
+@@ -396,10 +403,18 @@ target_link_libraries(migraphx INTERFACE $<BUILD_INTERFACE:msgpack-cxx>)
+ 
+ add_library(migraphx_all_targets INTERFACE)
+ 
+-add_subdirectory(api)
+-add_subdirectory(driver)
+-add_subdirectory(onnx)
+-add_subdirectory(tf)
++if(MIGRAPHX_ENABLE_ONNX)
++    add_subdirectory(api)
++endif()
++if(MIGRAPHX_ENABLE_ONNX)
++    add_subdirectory(driver)
++endif()
++if(MIGRAPHX_ENABLE_ONNX)
++    add_subdirectory(onnx)
++endif()
++if(MIGRAPHX_ENABLE_TF)
++    add_subdirectory(tf)
++endif()
+ 
+ if(MIGRAPHX_ENABLE_PYTHON)
+ add_subdirectory(py)
+diff --git a/src/driver/main.cpp b/src/driver/main.cpp
+index e96f7f7cb..67d2316f7 100644
+--- a/src/driver/main.cpp
++++ b/src/driver/main.cpp
+@@ -35,8 +35,12 @@
+ #include "models.hpp"
+ #include "marker_roctx.hpp"
+ 
++#ifndef MIGRAPHX_DISABLE_TF
+ #include <migraphx/tf.hpp>
++#endif
++#ifndef MIGRAPHX_DISABLE_ONNX
+ #include <migraphx/onnx.hpp>
++#endif
+ #ifdef MIGRAPHX_ENABLE_PYTHON
+ #include <migraphx/py.hpp>
+ #endif
+diff --git a/src/py/CMakeLists.txt b/src/py/CMakeLists.txt
+index 32da2c08b..7a6f1ae2d 100644
+--- a/src/py/CMakeLists.txt
++++ b/src/py/CMakeLists.txt
+@@ -32,7 +32,13 @@ include(PythonModules)
+ 
+ foreach(PYTHON_VERSION ${PYTHON_VERSIONS})
+     py_add_module(migraphx_pybind_${PYTHON_VERSION} migraphx_py.cpp PYTHON_VERSION ${PYTHON_VERSION} PYTHON_MODULE migraphx)
+-    target_link_libraries(migraphx_pybind_${PYTHON_VERSION} PRIVATE migraphx migraphx_tf migraphx_onnx migraphx_all_targets)
++    target_link_libraries(migraphx_pybind_${PYTHON_VERSION} PRIVATE migraphx migraphx_all_targets)
++    if(TARGET migraphx_onnx)
++        target_link_libraries(migraphx_pybind_${PYTHON_VERSION} PRIVATE migraphx_onnx)
++    endif()
++    if(TARGET migraphx_tf)
++        target_link_libraries(migraphx_pybind_${PYTHON_VERSION} PRIVATE migraphx_tf)
++    endif()
+     rocm_install_targets(TARGETS migraphx_pybind_${PYTHON_VERSION})
+     add_dependencies(migraphx_py migraphx_pybind_${PYTHON_VERSION})
+ 
+diff --git a/src/py/migraphx_py.cpp b/src/py/migraphx_py.cpp
+index 2d2fbe879..daead61f1 100644
+--- a/src/py/migraphx_py.cpp
++++ b/src/py/migraphx_py.cpp
+@@ -35,8 +35,12 @@
+ #include <migraphx/instruction.hpp>
+ #include <migraphx/ref/target.hpp>
+ #include <migraphx/stringutils.hpp>
++#ifndef MIGRAPHX_DISABLE_TF
+ #include <migraphx/tf.hpp>
++#endif
++#ifndef MIGRAPHX_DISABLE_ONNX
+ #include <migraphx/onnx.hpp>
++#endif
+ #include <migraphx/load_save.hpp>
+ #include <migraphx/register_target.hpp>
+ #include <migraphx/json.hpp>
+@@ -734,6 +738,7 @@ MIGRAPHX_PYBIND11_MODULE(migraphx, m)
+         py::arg("shape"),
+         py::arg("address"));
+ 
++#ifndef MIGRAPHX_DISABLE_TF
+     m.def(
+         "parse_tf",
+         [](const std::string& filename,
+@@ -750,7 +755,9 @@ MIGRAPHX_PYBIND11_MODULE(migraphx, m)
+         py::arg("batch_size")     = 1,
+         py::arg("map_input_dims") = std::unordered_map<std::string, std::vector<std::size_t>>(),
+         py::arg("output_names")   = std::vector<std::string>());
++#endif
+ 
++#ifndef MIGRAPHX_DISABLE_ONNX
+     m.def("get_onnx_operators", [] { return migraphx::get_onnx_operators(); });
+     m.def(
+         "parse_onnx",
+@@ -828,6 +835,7 @@ MIGRAPHX_PYBIND11_MODULE(migraphx, m)
+         py::arg("print_program_on_error") = false,
+         py::arg("external_data_path")     = "",
+         py::arg("use_debug_symbols")      = false);
++#endif // MIGRAPHX_DISABLE_ONNX
+ 
+     m.def(
+         "load",
+diff --git a/src/targets/gpu/device_name.cpp b/src/targets/gpu/device_name.cpp
+index 2b825ea06..10c14a3ee 100644
+--- a/src/targets/gpu/device_name.cpp
++++ b/src/targets/gpu/device_name.cpp
+@@ -121,7 +121,7 @@ bool gfx_has_mx_intrinsics(const context& ctx)
+     return gfx_has_mx_intrinsics_impl(get_gfx_name(ctx.get_current_device().get_device_name()));
+ }
+ 
+-#if MIGRAPHX_USE_HIPBLASLT
++#if MIGRAPHX_USE_HIPBLASLT || MIGRAPHX_USE_ROCBLAS
+ 
+ static bool gfx_default_rocblas_impl(const std::string& gfx_name)
+ {
+diff --git a/src/targets/gpu/include/migraphx/gpu/device_name.hpp b/src/targets/gpu/include/migraphx/gpu/device_name.hpp
+index 7d8f9652e..e0bd78010 100644
+--- a/src/targets/gpu/include/migraphx/gpu/device_name.hpp
++++ b/src/targets/gpu/include/migraphx/gpu/device_name.hpp
+@@ -55,7 +55,7 @@ MIGRAPHX_GPU_EXPORT bool gfx_has_mx_intrinsics(const context& ctx);
+ 
+ MIGRAPHX_GPU_EXPORT bool gfx_has_fp8fnuz_support();
+ 
+-#if MIGRAPHX_USE_HIPBLASLT
++#if MIGRAPHX_USE_HIPBLASLT || MIGRAPHX_USE_ROCBLAS
+ MIGRAPHX_GPU_EXPORT bool gfx_default_rocblas();
+ MIGRAPHX_GPU_EXPORT bool gfx_default_rocblas(const context& ctx);
+ #endif
+diff --git a/src/targets/gpu/jit/mlir.cpp b/src/targets/gpu/jit/mlir.cpp
+index 69d38e6c5..04bb8d538 100644
+--- a/src/targets/gpu/jit/mlir.cpp
++++ b/src/targets/gpu/jit/mlir.cpp
+@@ -22,6 +22,8 @@
+  * THE SOFTWARE.
+  */
+ 
++#ifdef MIGRAPHX_MLIR
++
+ #include <iterator>
+ #include <migraphx/builtin.hpp>
+ #include <migraphx/instruction_ref.hpp>
+@@ -405,3 +407,5 @@ struct mlir_compiler : compiler<mlir_compiler>
+ } // namespace gpu
+ } // namespace MIGRAPHX_INLINE_NS
+ } // namespace migraphx
++
++#endif // MIGRAPHX_MLIR
