@@ -22,6 +22,11 @@ $RocmSdkCore   = "$VenvRoot\Lib\site-packages\_rocm_sdk_core"
 $RocmSdkLibBin  = "$VenvRoot\Lib\site-packages\_rocm_sdk_libraries\bin"
 $RocmSdkDevel   = "$ProjectRoot\rocm-sdk\_rocm_sdk_devel"
 $ClangDir       = "$RocmSdkCore\lib\llvm\bin"
+$ClangDeps      = "$ProjectRoot\clang-deps"   # clang-built abseil + protobuf (for ONNX)
+
+# ONNX/TF need protobuf+abseil built with clang++ (run build_deps.sh first).
+# If clang-deps is missing, ONNX/TF are auto-disabled.
+$EnableOnnx = Test-Path "$ClangDeps\lib\cmake\protobuf\protobuf-config.cmake"
 
 Write-Host "=== MIGraphX Windows Build (ROCm 7.14 pip SDK) ===" -ForegroundColor Cyan
 Write-Host "ROCm Core:  $RocmSdkCore"
@@ -55,7 +60,8 @@ $cmakeArgs = @(
     "-DCMAKE_RC_COMPILER=C:/Program Files/AMD/ROCm/7.1/bin/llvm-rc.exe",
     "-DCMAKE_MAKE_PROGRAM=$Ninja",
     "-DCMAKE_BUILD_TYPE=Release",
-    "-DCMAKE_PREFIX_PATH=$RocmSdkDevel;$RocmSdkCore;$VcpkgInstalled;$RocmCmakeRoot",
+    # clang-deps FIRST so its clang abseil wins over vcpkg's MSVC abseil (same target names)
+    "-DCMAKE_PREFIX_PATH=$ClangDeps;$RocmSdkDevel;$RocmSdkCore;$VcpkgInstalled;$RocmCmakeRoot",
     "-DGPU_TARGETS=$GPU_TARGETS",
     # ROCm device library path — pip SDK uses non-standard layout
     "-DCMAKE_CXX_FLAGS=--rocm-device-lib-path=$RocmSdkCore/lib/llvm/amdgcn/bitcode",
@@ -65,9 +71,9 @@ $cmakeArgs = @(
     "-DMIGRAPHX_USE_HIPBLASLT=ON",
     "-DMIGRAPHX_USE_COMPOSABLEKERNEL=OFF",  # CK not ported to Windows
     "-DMIGRAPHX_ENABLE_MLIR=OFF",            # rocMLIR not available on Windows
-    # ONNX/TF parsers (disabled — protobuf MSVC ABI mismatch with clang)
-    "-DMIGRAPHX_ENABLE_ONNX=OFF",
-    "-DMIGRAPHX_ENABLE_TF=OFF",
+    # ONNX/TF parsers — enabled when clang-built protobuf is present (build_deps.sh)
+    "-DMIGRAPHX_ENABLE_ONNX=$(if ($EnableOnnx) {'ON'} else {'OFF'})",
+    "-DMIGRAPHX_ENABLE_TF=$(if ($EnableOnnx) {'ON'} else {'OFF'})",
     # Python bindings
     "-DMIGRAPHX_ENABLE_PYTHON=ON",
     "-DPYTHON_EXECUTABLE=$VenvRoot\Scripts\python.exe",
@@ -77,6 +83,18 @@ $cmakeArgs = @(
     "-DBUILD_TESTING=OFF",
     "-Wno-dev"  # Suppress cmake policy warnings (hip-config symlink noise)
 )
+
+# When ONNX is enabled, point cmake explicitly at the clang-built protobuf/abseil
+if ($EnableOnnx) {
+    $cmakeArgs += @(
+        "-Dprotobuf_DIR=$ClangDeps/lib/cmake/protobuf",
+        "-Dabsl_DIR=$ClangDeps/lib/cmake/absl",
+        "-Dutf8_range_DIR=$ClangDeps/lib/cmake/utf8_range"
+    )
+    Write-Host "ONNX/TF parsers: ENABLED (clang-deps found)" -ForegroundColor Green
+} else {
+    Write-Host "ONNX/TF parsers: DISABLED (run build_deps.sh to enable)" -ForegroundColor Yellow
+}
 
 & $CmakeExe @cmakeArgs 2>&1
 if ($LASTEXITCODE -ne 0) {

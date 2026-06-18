@@ -24,6 +24,8 @@ MIGRAPHX_FILES = [
     "migraphx.dll",
     "migraphx_device.dll",
     "migraphx_gpu.dll",
+    "migraphx_onnx.dll",
+    "migraphx_tf.dll",
     "migraphx_py.dll",
     "migraphx_py_3.12.dll",
     "migraphx_ref.dll",

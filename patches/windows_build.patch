@@ -69,6 +69,40 @@ index 991e135ce..a8bd8e0d0 100644
  
  if(MIGRAPHX_ENABLE_PYTHON)
  add_subdirectory(py)
+diff --git a/src/api/api.cpp b/src/api/api.cpp
+index 21e23e55b..dcaa0eead 100644
+--- a/src/api/api.cpp
++++ b/src/api/api.cpp
+@@ -28,7 +28,9 @@
+ #include <migraphx/shape.hpp>
+ #include <migraphx/program.hpp>
+ #include <migraphx/onnx.hpp>
++#ifndef MIGRAPHX_DISABLE_TF
+ #include <migraphx/tf.hpp>
++#endif
+ #include <migraphx/instruction_ref.hpp>
+ #include <migraphx/instruction.hpp>
+ #include <migraphx/register_target.hpp>
+diff --git a/src/driver/CMakeLists.txt b/src/driver/CMakeLists.txt
+index b48205d46..c4f190885 100644
+--- a/src/driver/CMakeLists.txt
++++ b/src/driver/CMakeLists.txt
+@@ -50,7 +50,14 @@ rocm_clang_tidy_check(driver)
+ file(STRINGS "${CMAKE_SOURCE_DIR}/test/onnx/.onnxrt-commit" String_output)
+ target_compile_definitions(driver PUBLIC MIGRAPHX_ORT_SHA1="${String_output}")
+ 
+-target_link_libraries(driver migraphx_all_targets migraphx_onnx migraphx_tf)
++if(MIGRAPHX_ENABLE_ONNX)
++    target_link_libraries(driver migraphx_all_targets migraphx_onnx)
++else()
++    target_link_libraries(driver migraphx_all_targets)
++endif()
++if(MIGRAPHX_ENABLE_TF)
++    target_link_libraries(driver migraphx_tf)
++endif()
+ 
+ if(MIGRAPHX_ENABLE_PYTHON)
+     target_link_libraries(driver migraphx_py)
 diff --git a/src/driver/main.cpp b/src/driver/main.cpp
 index e96f7f7cb..67d2316f7 100644
 --- a/src/driver/main.cpp

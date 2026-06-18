@@ -189,43 +189,43 @@ model = migraphx.load_buffer(buf)
 | **hipBLASLt** | **✅ ON** | Flexible BLAS |
 | Composable Kernel | ❌ OFF | Not ported to Windows |
 | MLIR | ❌ OFF | rocMLIR not available on Windows |
-| **ONNX parser** | **❌ OFF** | vcpkg protobuf (MSVC) ABI mismatch with clang++; protobuf built with clang++ has cmake target incompatibilities |
-| **TF parser** | **❌ OFF** | Same protobuf ABI issue |
+| **ONNX parser** | **✅ ON** | Requires clang-built protobuf+abseil (`build_deps.sh`) |
+| **TF parser** | **✅ ON** | Same clang-built protobuf |
 | Python bindings | ✅ ON | `migraphx.cp312-win_amd64.pyd` |
 | Tests | ❌ OFF | Disabled for faster iteration |
 
-### Enabling ONNX Support
+### ONNX / TF Support
 
-ONNX/TF parsers need protobuf built with clang++ (vcpkg default is MSVC — ABI mismatch). Two paths:
+`parse_onnx()` and `parse_tf()` need protobuf + abseil built with **clang++** (vcpkg's
+MSVC protobuf has an ABI mismatch with clang-built MIGraphX). `build_deps.sh` handles this:
 
-**Path A — Manual protobuf build (recommended):**
-```powershell
-$ClangCXX = "F:\MIGraphxWin\venv\Lib\site-packages\_rocm_sdk_core\lib\llvm\bin\clang++.exe"
-$ClangCC  = "F:\MIGraphxWin\venv\Lib\site-packages\_rocm_sdk_core\lib\llvm\bin\clang.exe"
-$Prefix   = "F:\MIGraphxWin\clang-deps"
-
-# Build abseil-cpp
-git clone https://github.com/abseil/abseil-cpp.git --depth 1 --branch lts_2024_01_16
-cmake -S abseil-cpp -B abseil-cpp/build -G Ninja `
-  -DCMAKE_CXX_COMPILER=$ClangCXX -DCMAKE_C_COMPILER=$ClangCC `
-  -DCMAKE_INSTALL_PREFIX=$Prefix -DABSL_BUILD_TESTING=OFF
-cmake --build abseil-cpp/build --parallel && cmake --install abseil-cpp/build
-
-# Build protobuf
-git clone https://github.com/protocolbuffers/protobuf.git --depth 1 --branch v27.0
-cmake -S protobuf -B protobuf/build -G Ninja `
-  -DCMAKE_CXX_COMPILER=$ClangCXX -DCMAKE_C_COMPILER=$ClangCC `
-  -DCMAKE_PREFIX_PATH=$Prefix -DCMAKE_INSTALL_PREFIX=$Prefix `
-  -Dprotobuf_BUILD_TESTS=OFF -Dprotobuf_ABSL_PROVIDER=package
-cmake --build protobuf/build --parallel && cmake --install protobuf/build
+```bash
+# From a Git-Bash / MSYS shell (uses cygpath + sed):
+bash build_deps.sh
 ```
 
-Then add `$Prefix` to `CMAKE_PREFIX_PATH` and set `-DMIGRAPHX_ENABLE_ONNX=ON -DMIGRAPHX_ENABLE_TF=ON`.
+This clones and builds abseil-cpp (`lts_2024_01_16`) and protobuf (`v27.0`) into
+`clang-deps/` with the `/MD` dynamic runtime, then patches `protobuf-targets.cmake`.
 
-**Path B — vcpkg custom triplet:**
-Create `x64-windows-clang.cmake` triplet with clang compilers, then `vcpkg install protobuf:x64-windows-clang`.
+After `clang-deps/` exists, `build_migraphx.ps1` auto-detects it and enables ONNX/TF
+(passes `protobuf_DIR`/`absl_DIR`/`utf8_range_DIR`, puts `clang-deps` first in
+`CMAKE_PREFIX_PATH`). No flags needed — just run `build.bat`.
 
-> **⚠️ Current state:** ONNX disabled. `migraphx.parse_onnx()` not available. Use direct API (build programs manually) or rebuild protobuf with clang++ to enable ONNX.
+**Three non-obvious fixes that make this work** (all encoded in `build_deps.sh` +
+`build_migraphx.ps1`):
+
+1. **`/MD` everywhere.** abseil + protobuf must use the dynamic CRT to match MIGraphX's
+   clang++ build. Protobuf defaults to `/MT`; override via `CMAKE_MSVC_RUNTIME_LIBRARY`
+   toolchain file + `-Dprotobuf_MSVC_STATIC_RUNTIME=OFF`.
+2. **Strip `$<LINK_ONLY:utf8_range::utf8_validity>`.** That generator-expression wrapper
+   doesn't propagate through a `STATIC IMPORTED` protobuf target on lld-link, so
+   `utf8_validity.lib` never links → undefined `IsStructurallyValid`. `build_deps.sh`
+   seds it to a plain dependency post-install.
+3. **`clang-deps` first in `CMAKE_PREFIX_PATH`.** vcpkg also ships abseil (MSVC DLL,
+   same `absl::*` target names). Listing `clang-deps` first ensures the clang static
+   abseil wins, avoiding a second ABI mismatch.
+
+Requires a Python ONNX exporter to produce models: `pip install onnx`.
 
 ## Building from Source
 

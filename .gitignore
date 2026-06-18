@@ -27,15 +27,15 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Build helpers
-build_deps.sh
-protobuf-toolchain.cmake
-
-# Dependency build outputs
+# Dependency build outputs (abseil/protobuf source + clang-built install)
 abseil-cpp/
 protobuf/
 clang-deps/
+protobuf-toolchain.cmake
 bin.7z
+lib.7z
+*.whl
+*.onnx
 
 # .claude / serena (editor config, not code)
 .claude/
