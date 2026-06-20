@@ -1,101 +1,72 @@
-# MIGraphX for Windows — ROCm 7.14 + MIOpen + rocBLAS
+# MIGraphX for Windows — ROCm 7.14 + CK + MLIR + ONNX
 
-MIGraphX 2.16.0.dev built for AMD GPUs (27 architectures, gfx900–gfx1250) on Windows 11.
-GPU backend with **MIOpen** (Find-2.0 API), **rocBLAS** (Beta API), **hipBLASLt**, and **hipRTC**.
+MIGraphX 2.x built from source for AMD GPUs (23 architectures, gfx900–gfx1201) on Windows 11.
+GPU backend with **Composable Kernel** (CK gemm/attention), **rocMLIR** (conv/GEMM fusion),
+**MIOpen**, **rocBLAS**, **hipBLASLt**, and **ONNX Runtime MIGraphX EP**.
+
+**Benchmarked:** 1.92× faster than PyTorch fp32, 2.26× faster fp16 on ResNet-50 (gfx1103, batch 1).
 
 ## Prerequisites
 
 - **Windows 11** (Windows 10 may work, untested)
 - **AMD GPU** — any supported arch (see GPU Targets below)
-- **Python 3.12** (other 3.10+ versions may work)
-- **Visual Studio 2022 BuildTools** — for vcpkg C++ deps + CMake + Ninja
-- **Git** — for cloning AMDMIGraphX + rocm-cmake
+- **Python 3.12**
+- **Visual Studio 2022 BuildTools** — MSVC compiler + MSBuild (for ONNX Runtime build)
+- **Git** — for cloning AMDMIGraphX and dependencies
 
 ### Install Python Environment
 
-Create a virtual environment and install the ROCm 7.14 packages.
+Create a virtual environment and install ROCm 7.14 packages.
 
-**AMD Radeon RX 9000 Series (gfx1200/gfx1201):**
+**Example — RDNA3 APU (gfx1103, Ryzen 780M / 760M):**
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\activate
+python -m venv .env
+.env\Scripts\activate
 
 pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ `
-    "rocm[libraries,device-gfx1201,device-gfx1200]==7.14.0a20260615" `
-    "torch[device-gfx1201,device-gfx1200]==2.10.0+rocm7.14.0a20260615" `
-    "torchvision[device-gfx1201,device-gfx1200]==0.25.0+rocm7.14.0a20260615" `
+    "rocm[libraries,device-gfx1103]==7.14.0a20260615" `
+    "torch[device-gfx1103]==2.10.0+rocm7.14.0a20260615" `
+    "torchvision[device-gfx1103]==0.25.0+rocm7.14.0a20260615" `
     "rocm_sdk_devel==7.14.0a20260615"
 ```
 
-For other GPU architectures replace `device-gfx1200,device-gfx1201` with your target (e.g. `device-gfx1100` for RX 7000 series).
-
-After install, extract the devel package:
-```powershell
-$SP = python -c "import site; print(site.getsitepackages()[0])"
-New-Item -ItemType Directory -Force -Path rocm-sdk | Out-Null
-tar -xf "$SP\rocm_sdk_devel\_devel.tar" -C rocm-sdk
-$core  = "$SP\_rocm_sdk_core"
-$devel = "rocm-sdk\_rocm_sdk_devel"
-Copy-Item "$core\lib\*.lib"      "$devel\lib\"     -Force
-Copy-Item "$core\bin\*.dll"      "$devel\bin\"     -Force
-Copy-Item "$core\include\*"      "$devel\include\" -Recurse -Force
-```
+Replace `device-gfx1103` with your GPU target (e.g. `device-gfx1100` for RX 7900 XTX,
+`device-gfx1030` for RX 6800/6900).
 
 ## Quick Start — Python
 
-After building with `build_migraphx.ps1`, `migraphx` is installed into the venv automatically. Use the venv python directly:
+After building with `build-migraphx-win.ps1`, install the produced wheel into your venv:
+
+```powershell
+pip install wheels\migraphx-0.1.0+multiarch-cp312-cp312-win_amd64.whl
+```
+
+Then use MIGraphX directly:
 
 ```python
-import os, torch
-
-# Locate ROCm SDK from torch install (no hardcoded paths)
-_sp = os.path.dirname(torch.__file__)
-_sp = os.path.dirname(_sp)  # site-packages
-if True:
-    ROCM_PATH = os.path.join(_sp, "_rocm_sdk_devel")
-    os.environ["HIP_PLATFORM"]       = "amd"
-    os.environ["HIP_PATH"]           = ROCM_PATH
-    os.environ["HIP_CLANG_PATH"]     = os.path.join(ROCM_PATH, "llvm", "bin")
-    os.environ["HIP_INCLUDE_PATH"]   = os.path.join(ROCM_PATH, "include")
-    os.environ["HIP_LIB_PATH"]       = os.path.join(ROCM_PATH, "lib")
-    os.environ["HIP_DEVICE_LIB_PATH"]= os.path.join(ROCM_PATH, "lib", "llvm", "amdgcn", "bitcode")
-    os.environ["PATH"] = os.pathsep.join([
-        os.path.join(ROCM_PATH, "bin"),
-        os.path.join(ROCM_PATH, "llvm", "bin"),
-        os.environ.get("PATH", "")
-    ])
-    os.environ["CPATH"]        = os.path.join(ROCM_PATH, "include") + os.pathsep + os.environ.get("CPATH", "")
-    os.environ["LIBRARY_PATH"] = os.pathsep.join([
-        os.path.join(ROCM_PATH, "lib"), os.path.join(ROCM_PATH, "lib64"),
-        os.environ.get("LIBRARY_PATH", "")
-    ])
-    os.environ["PKG_CONFIG_PATH"] = os.path.join(ROCM_PATH, "lib", "pkgconfig") + os.pathsep + os.environ.get("PKG_CONFIG_PATH", "")
-
 import migraphx
-print(f"MIGraphX {migraphx.__version__}")
+import numpy as np
 
-# Conv + ReLU on GPU (uses MIOpen for convolution)
-p = migraphx.program()
-mm = p.get_main_module()
-x = mm.add_parameter("x", migraphx.shape(type="float", lens=[1, 3, 224, 224]))
-w = mm.add_literal(migraphx.generate_argument(migraphx.shape(type="float", lens=[64, 3, 3, 3])))
-c = mm.add_instruction(migraphx.op("convolution", padding=[1, 1], stride=[1, 1]), [x, w])
-r = mm.add_instruction(migraphx.op("relu"), [c])
-mm.add_return([r])
+# Parse and run an ONNX model on GPU
+model = migraphx.parse_onnx("resnet50.onnx")
+model.compile(migraphx.get_target("gpu"))
 
-p.compile(migraphx.get_target("gpu"))
-result = p.run({"x": migraphx.generate_argument(migraphx.shape(type="float", lens=[1, 3, 224, 224]))})
-print(f"Output: {result[0].get_shape()}")
+inp = np.random.randn(1, 3, 224, 224).astype(np.float32)
+names = list(model.get_parameter_shapes().keys())
+result = model.run({names[0]: migraphx.argument(inp)})
+output = np.array(list(result)[0])
+print(f"Output shape: {output.shape}")
 ```
+
+> **Note:** `import migraphx` registers the MIGraphX DLL directory. Always import it
+> before `import onnxruntime` when using the ONNX Runtime EP (see below).
 
 ## PyTorch Model Inference
 
 ### PyTorch → ONNX → MIGraphX (recommended)
 
-Export from PyTorch, load in MIGraphX for GPU inference.
-
-**Step 1 — Export from PyTorch to ONNX:**
+**Step 1 — Export from PyTorch:**
 
 ```python
 import torch, torchvision
@@ -111,27 +82,20 @@ torch.onnx.export(
 )
 ```
 
-**Step 2 — Load & run with MIGraphX:**
+**Step 2 — Load and run with MIGraphX:**
 
 ```python
-import os, numpy as np, torch
-
-_sp = os.path.dirname(os.path.dirname(torch.__file__))  # site-packages
-ROCM_PATH = os.path.join(_sp, "_rocm_sdk_devel")
-os.environ["HIP_PLATFORM"] = "amd"
-os.environ["HIP_PATH"]     = ROCM_PATH
-os.environ["PATH"] = os.path.join(ROCM_PATH, "llvm", "bin") + os.pathsep + os.environ.get("PATH", "")
-
 import migraphx
+import numpy as np
 
 model = migraphx.parse_onnx("resnet50.onnx")
 model.compile(migraphx.get_target("gpu"))
 
-input_data = np.random.randn(1, 3, 224, 224).astype(np.float32)
+inp = np.random.randn(1, 3, 224, 224).astype(np.float32)
 names = list(model.get_parameter_shapes().keys())
-result = model.run({names[0]: migraphx.argument(input_data)})
+result = model.run({names[0]: migraphx.argument(inp)})
 output = np.array(list(result)[0])
-print(f"Output: {output.shape}")
+print(output.shape)
 ```
 
 **Step 3 — Benchmark:**
@@ -139,18 +103,17 @@ print(f"Output: {output.shape}")
 ```python
 import time
 
-# Warmup
-for _ in range(10):
-    model.run({names[0]: migraphx.argument(input_data)})
+for _ in range(20):  # warmup
+    model.run({names[0]: migraphx.argument(inp)})
 migraphx.gpu_sync()
 
 N = 100
 t0 = time.perf_counter()
 for _ in range(N):
-    model.run({names[0]: migraphx.argument(input_data)})
+    model.run({names[0]: migraphx.argument(inp)})
 migraphx.gpu_sync()
-elapsed = time.perf_counter() - t0
-print(f"{N/elapsed:.1f} inf/s, {elapsed/N*1000:.2f} ms/inf")
+print(f"{N / (time.perf_counter() - t0):.1f} inf/s, "
+      f"{(time.perf_counter() - t0) / N * 1000:.2f} ms/inf")
 ```
 
 ### Quantization: FP16 / INT8
@@ -158,11 +121,11 @@ print(f"{N/elapsed:.1f} inf/s, {elapsed/N*1000:.2f} ms/inf")
 ```python
 model = migraphx.parse_onnx("model.onnx")
 
-# FP16 (fast, small accuracy loss)
+# FP16 — fast, minimal accuracy loss
 migraphx.quantize_fp16(model)
 model.compile(migraphx.get_target("gpu"))
 
-# INT8 (fastest, needs calibration)
+# INT8 — fastest, requires calibration data
 calib = [migraphx.argument(np.random.randn(1, 3, 224, 224).astype(np.float32))]
 migraphx.quantize_int8(model, migraphx.get_target("gpu"), calibration=calib)
 model.compile(migraphx.get_target("gpu"))
@@ -171,150 +134,198 @@ model.compile(migraphx.get_target("gpu"))
 ### Save / Load compiled programs
 
 ```python
-migraphx.save(model, "model.mxr")          # to file
-model = migraphx.load("model.mxr")
+migraphx.save(model, "model.mxr")      # save to file
+model = migraphx.load("model.mxr")     # load from file
 
-buf = migraphx.save_buffer(model)          # to bytes
-model = migraphx.load_buffer(buf)
+buf = migraphx.save_buffer(model)      # save to bytes
+model = migraphx.load_buffer(buf)      # load from bytes
 ```
+
+## ONNX Runtime MIGraphX EP
+
+Install the ORT wheel (delegates subgraphs to MIGraphX, compiled on GPU):
+
+```powershell
+pip install wheels\onnxruntime_migraphx-1.28.0-cp312-cp312-win_amd64.whl
+```
+
+```python
+import migraphx          # MUST come before onnxruntime — registers MIGraphX DLL dirs
+import onnxruntime as ort
+import numpy as np
+
+sess = ort.InferenceSession(
+    "resnet50.onnx",
+    providers=["MIGraphXExecutionProvider", "CPUExecutionProvider"],
+)
+print("Active providers:", sess.get_providers())
+
+inp = np.random.randn(1, 3, 224, 224).astype(np.float32)
+out = sess.run(None, {"input": inp})
+print(out[0].shape)
+```
+
+> **Important:** `import migraphx` must precede `import onnxruntime`. MIGraphX's
+> `__init__.py` calls `os.add_dll_directory()` for the package dir; without it,
+> `migraphx_gpu.dll` fails to load (error 126) when ORT initialises the EP and
+> silently falls back to CPU.
 
 ## Build Configuration
 
 | Feature | Status | Note |
 |---------|--------|------|
-| GPU backend | ✅ ON | HIP + hipRTC |
-| GPU targets | gfx900–gfx1250 (27 arches) | all RDNA/CDNA via multi-arch build |
-| **MIOpen** | **✅ ON** | Find-2.0 API + Find Mode API |
-| **rocBLAS** | **✅ ON** | Beta API, GEMM acceleration |
-| **hipBLASLt** | **✅ ON** | Flexible BLAS |
-| Composable Kernel | ❌ OFF | Not ported to Windows |
-| MLIR | ❌ OFF | rocMLIR not available on Windows |
-| **ONNX parser** | **✅ ON** | Requires clang-built protobuf+abseil (`build_deps.sh`) |
-| **TF parser** | **✅ ON** | Same clang-built protobuf |
-| Python bindings | ✅ ON | `migraphx.cp312-win_amd64.pyd` |
-| Tests | ❌ OFF | Disabled for faster iteration |
-
-### ONNX / TF Support
-
-`parse_onnx()` and `parse_tf()` need protobuf + abseil built with **clang++** (vcpkg's
-MSVC protobuf has an ABI mismatch with clang-built MIGraphX). `build_deps.sh` handles this:
-
-```bash
-# From a Git-Bash / MSYS shell (uses cygpath + sed):
-bash build_deps.sh
-```
-
-This clones and builds abseil-cpp (`lts_2024_01_16`) and protobuf (`v27.0`) into
-`clang-deps/` with the `/MD` dynamic runtime, then patches `protobuf-targets.cmake`.
-
-After `clang-deps/` exists, `build_migraphx.ps1` auto-detects it and enables ONNX/TF
-(passes `protobuf_DIR`/`absl_DIR`/`utf8_range_DIR`, puts `clang-deps` first in
-`CMAKE_PREFIX_PATH`). No flags needed — just run `build.bat`.
-
-**Three non-obvious fixes that make this work** (all encoded in `build_deps.sh` +
-`build_migraphx.ps1`):
-
-1. **`/MD` everywhere.** abseil + protobuf must use the dynamic CRT to match MIGraphX's
-   clang++ build. Protobuf defaults to `/MT`; override via `CMAKE_MSVC_RUNTIME_LIBRARY`
-   toolchain file + `-Dprotobuf_MSVC_STATIC_RUNTIME=OFF`.
-2. **Strip `$<LINK_ONLY:utf8_range::utf8_validity>`.** That generator-expression wrapper
-   doesn't propagate through a `STATIC IMPORTED` protobuf target on lld-link, so
-   `utf8_validity.lib` never links → undefined `IsStructurallyValid`. `build_deps.sh`
-   seds it to a plain dependency post-install.
-3. **`clang-deps` first in `CMAKE_PREFIX_PATH`.** vcpkg also ships abseil (MSVC DLL,
-   same `absl::*` target names). Listing `clang-deps` first ensures the clang static
-   abseil wins, avoiding a second ABI mismatch.
-
-Requires a Python ONNX exporter to produce models: `pip install onnx`.
+| GPU backend | ✓ ON | HIP + hipRTC |
+| GPU targets | 23 arches, gfx900–gfx1201 | multi-arch device.dll |
+| **Composable Kernel** | **✓ ON** | CK gemm / attention kernels |
+| **rocMLIR** | **✓ ON** | Conv + GEMM fusion via MLIR |
+| **MIOpen** | **✓ ON** | Convolution, pooling, BN |
+| **rocBLAS / hipBLASLt** | **✓ ON** | GEMM acceleration |
+| **ONNX parser** | **✓ ON** | Full op coverage via protobuf + abseil |
+| **TF parser** | **✓ ON** | TensorFlow frozen graph |
+| Python bindings | ✓ ON | `migraphx.cp312-win_amd64.pyd` |
+| Tests | ✗ OFF | Disabled for faster build |
+| ONNX Runtime EP | ✓ ON | `onnxruntime_providers_migraphx.dll` |
 
 ## Building from Source
 
-### Step 1 — Get source + apply patches
+### Step 1 — Build MIGraphX
 
 ```powershell
-.\setup_src.ps1
+# Single arch (fast, ~1–2 hr)
+.\build-migraphx-win.ps1 -GpuTargets gfx1103
+
+# All 23 supported architectures (~3–5 hr)
+.\build-migraphx-win.ps1 -GpuTargets all
+
+# Custom subset
+.\build-migraphx-win.ps1 -GpuTargets gfx1100,gfx1103
 ```
 
-Clones AMDMIGraphX at the pinned commit (`0043a53c9`), clones `rocm-cmake`, and applies `patches/windows_build.patch` (Windows compatibility fixes).
+The script handles: cloning all deps, building abseil → protobuf → CK → rocMLIR → MIGraphX,
+applying all source patches, and producing the wheel at `wheels/`.
 
-### Step 2 — Build
+### Step 2 — Build ONNX Runtime MIGraphX EP (optional)
+
+Requires MIGraphX built first (Step 1). From `onnxruntime/` dir (clone `microsoft/onnxruntime`):
 
 ```powershell
-# Default: gfx1200 + gfx1201 only (fast)
-.\build.bat
-
-# All 27 GPU architectures
-.\build_migraphx.ps1 -GPU_TARGETS "gfx900;gfx906;gfx908;gfx90a;gfx942;gfx950;gfx1010;gfx1011;gfx1012;gfx1030;gfx1031;gfx1032;gfx1033;gfx1034;gfx1035;gfx1036;gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1152;gfx1153;gfx1200;gfx1201;gfx1250"
+python tools\ci_build\build.py `
+  --build_dir build\win-mgx2 --config Release `
+  --use_migraphx --migraphx_home ..\AMDMIGraphX\install `
+  --cmake_path .env\Scripts\cmake.exe --ctest_path .env\Scripts\ctest.exe `
+  --build_shared_lib --enable_pybind --build_wheel `
+  --cmake_extra_defines `
+    CMAKE_PREFIX_PATH=.env\Lib\site-packages\_rocm_sdk_devel `
+    onnxruntime_BUILD_UNIT_TESTS=OFF `
+    FETCHCONTENT_TRY_FIND_PACKAGE_MODE=NEVER `
+  --skip_submodule_sync --parallel --update --build
 ```
 
-Handles cmake configure, Ninja build, DLL copy, venv install, smoke test, and wheel build.
+**Three patches applied to `cmake/onnxruntime_providers_migraphx.cmake`:**
 
-Test with:
-```powershell
-F:\MIGraphxWin\venv\Scripts\python.exe test_gpu.py
-F:\MIGraphxWin\venv\Scripts\python.exe test_migraphx.py
+1. **hiprtc/comgr DLL versions** — add `amd_comgr.dll`, `hiprtc0714.dll`,
+   `hiprtc-builtins0714.dll` to the Windows DLL copy list (upstream hardcodes 0602/0604/0700).
+2. **`FETCHCONTENT_TRY_FIND_PACKAGE_MODE=NEVER`** — prevents the ROCm SDK's
+   `nlohmann_json` (lacks `.natvis`) from shadowing ORT's own fetched copy.
+3. **`/std:c++17` for the EP target** — `migraphx.hpp` uses `module` as a C++ type name;
+   MSVC C++20 mode treats it as a keyword (C2059/C7586). Setting `/std:c++17` on
+   `onnxruntime_providers_migraphx` only fixes this without affecting the rest of ORT.
+
+### GPU Targets
+
+```
+# RDNA4
+gfx1201 (RX 9070 XT)   gfx1200 (RX 9070)
+# RDNA3.5
+gfx1153  gfx1152  gfx1151  gfx1150
+# RDNA3
+gfx1103 (780M/760M APU)  gfx1102  gfx1101 (RX 7800 XT)  gfx1100 (RX 7900 XTX)
+# RDNA2
+gfx1036  gfx1035  gfx1034  gfx1033  gfx1032  gfx1031  gfx1030 (RX 6800/6900)
+# RDNA1
+gfx1012  gfx1011  gfx1010
+# Vega / GCN5
+gfx906 (Vega 20)  gfx90c  gfx900 (Vega 10)
 ```
 
-### Patches (`patches/windows_build.patch`)
+### Source Patches the Script Auto-Applies
 
-Applied to AMDMIGraphX source to build on Windows:
+| # | File | Fix |
+|---|------|-----|
+| 1 | `composable_kernel/CMakeLists.txt` | `/std:c++20` not `-std=c++20` (clang-cl); placed before add_embed_library |
+| 2 | `composable_kernel/include/ck/utility/utils.hpp` | Add missing `#include <string>` |
+| 3 | CK codegen cmake | `-DEMBED_USE=CArrays` (RC mode fails on long Windows paths) |
+| 4 | rocMLIR cmake | `-DLLVM_DISABLE_ASSEMBLY_FILES=ON` (ml64.exe chokes on clang flags in BLAKE3 .asm) |
+| 5 | `AMDMIGraphX/src/targets/gpu/ck.hpp` | Remove `#ifndef _WIN32` guard around `MIGRAPHX_DECLARE_ENV_VAR` for CK env vars |
+| 6 | git config | `core.longpaths=true` (CK repo has very long paths) |
 
-| File | Fix |
-|------|-----|
-| `CMakeLists.txt` | Add `MIGRAPHX_ENABLE_ONNX` / `MIGRAPHX_ENABLE_TF` options |
-| `cmake/PythonModules.cmake` | Skip non-numeric Python versions (Astral/uv detection) |
-| `src/CMakeLists.txt` | Conditional ONNX/TF subdirs; compile definitions when disabled |
-| `src/py/CMakeLists.txt` | Link ONNX/TF libs only when targets exist |
-| `src/py/migraphx_py.cpp` | Guard `parse_onnx` / `parse_tf` with `#ifndef MIGRAPHX_DISABLE_*` |
-| `src/driver/main.cpp` | Same include guards for ONNX/TF headers |
-| `src/targets/gpu/device_name.*` | Fix `#if` guard: `HIPBLASLT \|\| ROCBLAS` |
-| `src/targets/gpu/jit/mlir.cpp` | Wrap entire file in `#ifdef MIGRAPHX_MLIR` |
+### Non-Obvious Build Gotchas
+
+| Issue | Fix |
+|-------|-----|
+| abseil ABI mismatch (`absl::string_view` vs `std::string_view`) | Pin `ABSL_OPTION_USE_STD_STRING_VIEW=1` in `absl/base/options.h` before building abseil; rebuild abseil + protobuf together |
+| HIP multi-arch offload-bundle bug (arches silently dropped in device.dll) | `-DMIGRAPHX_WORKAROUND_HIP_MULTI_ARCH_BUG=ON` |
+| protoc `IMPORTED_LOCATION` blank → `protoc --cpp_out :path` emitted literally | Append `include(protoc-prebuilt-fix.cmake)` to `protobuf-config.cmake` |
+| GNU tar reads `C:\…` as remote host | Pass `--force-local` to tar |
+| git clone stderr → PowerShell `NativeCommandError` under `ErrorActionPreference=Stop` | Wrap all git calls in a helper that temporarily sets `ErrorActionPreference = Continue` |
+| Stale `CMakeCache.txt` from a prior single-arch build poisons reconfigure | Wipe `CMakeCache.txt + CMakeFiles/` when `.configure_done` marker is absent |
 
 ## API Reference
 
 ### Program construction
+
 | Function | Description |
 |----------|-------------|
 | `migraphx.program()` | Create an empty program |
 | `p.get_main_module()` | Get main module for adding instructions |
-| `p.compile(target)` | Compile for a target (e.g. GPU) |
+| `p.compile(target)` | Compile for a target (`migraphx.get_target("gpu")`) |
 | `p.run(params)` | Execute with dict of named arguments |
 | `p.get_parameter_shapes()` | Get expected input shapes |
 
 ### Module instructions
+
 | Method | Description |
 |--------|-------------|
-| `mm.add_parameter(name, shape)` | Add input placeholder |
-| `mm.add_literal(arg)` | Add constant (weights, biases) |
+| `mm.add_parameter(name, shape)` | Add named input placeholder |
+| `mm.add_literal(np_array)` | Add constant tensor (weights, biases) |
 | `mm.add_instruction(op, inputs)` | Add operation node |
 | `mm.add_return([...])` | Set module outputs |
 
-### Shapes & arguments
-| Function | Description |
-|----------|-------------|
-| `migraphx.shape(type="float", lens=[1,3,224,224])` | Create shape descriptor |
-| `migraphx.generate_argument(shape, seed=0)` | Generate random tensor |
-| `migraphx.argument(np_array)` | Wrap numpy array as MIGraphX tensor |
-| `np.array(mx_arg)` | Convert MIGraphX tensor to numpy |
+### Shapes and arguments
 
-### GPU memory
 | Function | Description |
 |----------|-------------|
-| `migraphx.allocate_gpu(shape)` | Allocate GPU buffer |
-| `migraphx.to_gpu(arg)` | Copy host→device |
-| `migraphx.from_gpu(arg)` | Copy device→host |
-| `migraphx.gpu_sync()` | Synchronize GPU stream |
+| `migraphx.shape(type="float_type", lens=[1,3,224,224])` | Create shape descriptor |
+| `migraphx.argument(np_array)` | Wrap numpy array as MIGraphX tensor |
+| `np.array(mx_result)` | Convert MIGraphX result tensor to numpy |
+| `migraphx.generate_argument(shape)` | Generate random tensor for testing |
+
+### Quantization
+
+| Function | Description |
+|----------|-------------|
+| `migraphx.quantize_fp16(program)` | Convert ops to FP16 in-place |
+| `migraphx.quantize_int8(program, target, calibration=[...])` | INT8 with calibration data |
+
+### GPU utilities
+
+| Function | Description |
+|----------|-------------|
+| `migraphx.gpu_sync()` | Synchronize GPU stream (use before timing) |
+| `migraphx.get_target("gpu")` | Get GPU compile target |
+| `migraphx.get_target("ref")` | Get CPU reference target |
 
 ### Common operations
-| Op name | Attributes |
-|---------|-----------|
+
+| Op name | Key attributes |
+|---------|----------------|
 | `convolution` | `padding`, `stride`, `dilation`, `group` |
 | `pooling` | `mode` (average/max), `padding`, `stride` |
 | `relu`, `sigmoid`, `tanh`, `leaky_relu` | — (`leaky_relu`: `alpha`) |
 | `softmax` | `axis` |
 | `dot` | — (matrix multiply) |
 | `add`, `mul`, `sub`, `div` | — (element-wise) |
-| `flatten`, `reshape`, `transpose` | `axis` / `dims` / `permutation` |
+| `reshape`, `transpose`, `flatten` | `dims` / `permutation` / `axis` |
 | `concat` | `axis` |
 | `batch_norm_inference` | `epsilon`, `momentum` |
 
@@ -322,37 +333,60 @@ Applied to AMDMIGraphX source to build on Windows:
 
 | File | Purpose |
 |------|---------|
-| `build_migraphx.ps1` | Full build script (cmake + ninja + DLL copy) |
-| `test_migraphx.py` | GPU inference smoke test (pointwise + convolution) |
-| `test_gpu.py` | Minimal add+relu GPU test |
+| `build-migraphx-win.ps1` | Full build script (PowerShell) |
+| `build-migraphx-win.sh` | Full build script (Git Bash) |
+| `make-wheel.ps1` | Package built artifacts into a pip wheel |
+| `benchmark_migraphx.py` | ResNet-50 benchmark vs PyTorch |
+| `wheels/` | Built wheels (migraphx + onnxruntime_migraphx) |
 
-## Output Binaries (`build_gpu/bin/`)
+## Output Binaries (`AMDMIGraphX/build/bin/`)
 
 ### MIGraphX DLLs
 
 | File | Size | Description |
 |------|------|-------------|
-| `migraphx.dll` | 48 MB | Core library |
-| `migraphx_device.dll` | 34 MB | 27-arch HIP kernels (gfx900–gfx1250) |
-| `migraphx_gpu.dll` | 4.6 MB | GPU target |
-| `migraphx_ref.dll` | 1.1 MB | Reference CPU target |
-| `migraphx_py.dll` | 78 KB | Python glue |
-| `migraphx_py_3.12.dll` | 219 KB | Python 3.12 bindings |
-| `migraphx.cp312-win_amd64.pyd` | 900 KB | Importable Python extension |
-| `migraphx-hiprtc-driver.exe` | 108 KB | HipRTC JIT kernel compiler (subprocess) |
+| `migraphx.dll` | 46 MB | Core library |
+| `migraphx_device.dll` | 30 MB | 23-arch HIP kernels (gfx900–gfx1201) |
+| `migraphx_gpu.dll` | 115 MB | GPU target (CK + MLIR + MIOpen + rocBLAS) |
+| `migraphx_onnx.dll` | 3.1 MB | ONNX graph parser |
+| `migraphx_tf.dll` | 2.6 MB | TensorFlow graph parser |
+| `migraphx_ref.dll` | 1.0 MB | Reference CPU target |
+| `migraphx_c.dll` | 370 KB | C API (used by ONNX Runtime EP) |
+| `migraphx_py.dll` | 70 KB | Python glue |
+| `migraphx_py_3.12.dll` | 165 KB | Python 3.12 bindings |
+| `migraphx.cp312-win_amd64.pyd` | 730 KB | Importable Python extension |
+| `migraphx-hiprtc-driver.exe` | 94 KB | HipRTC JIT kernel compiler |
 
-### Runtime ROCm DLLs (copied from pip SDK)
+### ONNX Runtime DLLs (`onnxruntime/build/win-mgx2/Release/Release/`)
 
-| File | Source |
-|------|--------|
-| `amdhip64_7.dll`, `hiprtc0714.dll`, `hiprtc-builtins0714.dll` | `_rocm_sdk_core/bin` |
-| `amd_comgr.dll`, `rocm_kpack.dll` | `_rocm_sdk_core/bin` |
-| `MIOpen.dll`, `rocblas.dll`, `libhipblaslt.dll` | `_rocm_sdk_libraries/bin` |
-| `sqlite3.dll` | vcpkg |
-| `VCRUNTIME140.dll`, `MSVCP140.dll`, `api-ms-win-crt-*.dll` | Windows SDK / System32 |
+| File | Size | Description |
+|------|------|-------------|
+| `onnxruntime.dll` | 16 MB | ORT core |
+| `onnxruntime_providers_migraphx.dll` | 357 KB | MIGraphX execution provider |
+| `onnxruntime_providers_shared.dll` | 11 KB | Shared EP loader |
 
-> The wheel (`dist/migraphx_rocm-*.whl`) bundles only the MIGraphX DLLs. ROCm SDK DLLs are loaded at runtime from the pip packages via a `.pth` setup file — no manual path configuration needed.
+### Wheels (`wheels/`)
+
+| File | Size | Description |
+|------|------|-------------|
+| `migraphx-0.1.0+multiarch-cp312-cp312-win_amd64.whl` | 48 MB | MIGraphX — all 23 GPU arches |
+| `onnxruntime_migraphx-1.28.0-cp312-cp312-win_amd64.whl` | 60 MB | ORT with MIGraphX EP |
+
+> Wheels bundle MIGraphX DLLs only. ROCm runtime DLLs (`amdhip64.dll`, `MIOpen.dll`,
+> `rocblas.dll`, etc.) are loaded at runtime from the `rocm_sdk_*` pip packages —
+> no manual PATH configuration needed.
+
+## Benchmark
+
+ResNet-50, batch 1, 224×224, 100 iterations after 20 warmup — gfx1103 (Ryzen AI 780M):
+
+| Backend | Precision | Mean (ms) | vs PyTorch |
+|---------|-----------|-----------|------------|
+| MIGraphX GPU | fp32 | 47.9 | **1.92×** |
+| MIGraphX GPU | fp16 | 31.9 | **2.26×** |
+| PyTorch GPU | fp32 | 91.9 | 1.0× |
+| PyTorch GPU | fp16 | 72.0 | 1.0× |
 
 ## License
 
-MIT — see [AMDMIGraphX](https://github.com/ROCm/AMDMIGraphX) upstream.
+MIT — see [AMDMIGraphX upstream](https://github.com/ROCm/AMDMIGraphX).
