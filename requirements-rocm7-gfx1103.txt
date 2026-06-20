@@ -1,0 +1,7 @@
+# GFX1103
+--index-url https://rocm.nightlies.amd.com/whl-multi-arch/
+# torchaudio
+rocm[libraries,device-gfx1103]==7.14.0a20260615
+torch[device-gfx1103]==2.10.0+rocm7.14.0a20260615
+torchvision[device-gfx1103]==0.25.0+rocm7.14.0a20260615
+rocm_sdk_devel==7.14.0a20260615
