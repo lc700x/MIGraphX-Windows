@@ -39,7 +39,7 @@ Replace `device-gfx1103` with your GPU target (e.g. `device-gfx1100` for RX 7900
 After building with `build-migraphx-win.ps1`, install the produced wheel into your venv:
 
 ```powershell
-pip install wheels\migraphx-0.1.0+multiarch-cp312-cp312-win_amd64.whl
+pip install wheels\migraphx-0.1.2+multiarch-cp312-cp312-win_amd64.whl
 ```
 
 Then use MIGraphX directly:
@@ -369,7 +369,7 @@ gfx906 (Vega 20)  gfx90c  gfx900 (Vega 10)
 
 | File | Size | Description |
 |------|------|-------------|
-| `migraphx-0.1.0+multiarch-cp312-cp312-win_amd64.whl` | 48 MB | MIGraphX — all 23 GPU arches |
+| `migraphx-0.1.2+multiarch-cp312-cp312-win_amd64.whl` | 48 MB | MIGraphX — all 23 GPU arches (standard opset-23 Attention) |
 | `onnxruntime_migraphx-1.28.0-cp312-cp312-win_amd64.whl` | 60 MB | ORT with MIGraphX EP |
 
 > Wheels bundle MIGraphX DLLs only. ROCm runtime DLLs (`amdhip64.dll`, `MIOpen.dll`,

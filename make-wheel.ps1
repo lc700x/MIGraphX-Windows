@@ -4,12 +4,12 @@
 # (those come from rocm_sdk_core / rocm_sdk_libraries pip packages).
 #
 # Usage:
-#   .\make-wheel.ps1 [-Arch gfx1103] [-Version 0.1.0]
+#   .\make-wheel.ps1 [-Arch gfx1103] [-Version 0.1.2]
 # ============================================================================
 [CmdletBinding()]
 param(
     [string]$Arch = "gfx1103",
-    [string]$Version = "0.1.0"
+    [string]$Version = "0.1.2"
 )
 $ErrorActionPreference = 'Stop'
 

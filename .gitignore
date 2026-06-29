@@ -47,4 +47,4 @@ lib.7z
 *.swp
 Thumbs.db
 Desktop.ini
-wheels
+wheel-stage
